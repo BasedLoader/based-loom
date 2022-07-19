@@ -282,7 +282,7 @@ public final class RunConfigSettings implements Named {
 	public void client() {
 		startFirstThread();
 		environment("client");
-		defaultMainClass(getExtension().isForge() ? Constants.Forge.LAUNCH_TESTING : Constants.Knot.KNOT_CLIENT);
+		defaultMainClass(Constants.Knot.KNOT_CLIENT);
 	}
 
 	/**
@@ -291,7 +291,7 @@ public final class RunConfigSettings implements Named {
 	public void server() {
 		programArg("nogui");
 		environment("server");
-		defaultMainClass(getExtension().isForge() ? Constants.Forge.LAUNCH_TESTING : Constants.Knot.KNOT_SERVER);
+		defaultMainClass(Constants.Knot.KNOT_SERVER);
 	}
 
 	/**
@@ -299,7 +299,7 @@ public final class RunConfigSettings implements Named {
 	 */
 	public void data() {
 		environment("data");
-		defaultMainClass(getExtension().isForge() ? Constants.Forge.LAUNCH_TESTING : Constants.Knot.KNOT_SERVER);
+		defaultMainClass(Constants.Knot.KNOT_SERVER);
 	}
 
 	/**
