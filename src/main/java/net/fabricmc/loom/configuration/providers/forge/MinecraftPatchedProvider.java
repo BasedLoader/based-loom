@@ -412,7 +412,7 @@ public class MinecraftPatchedProvider {
 			remapper.finish();
 		}
 
-		copyUserdevFiles(forgeUserdevJar, minecraftPatchedSrgJar);
+		copyUserdevFiles(forgeUserdevJar, mcOutput);
 		applyLoomPatchVersion(mcOutput);
 	}
 
