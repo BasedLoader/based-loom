@@ -29,6 +29,7 @@ import java.util.List;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import net.fabricmc.loom.configuration.providers.forge.ConfigValue;
 import net.fabricmc.loom.util.function.CollectionUtil;
 
 /**

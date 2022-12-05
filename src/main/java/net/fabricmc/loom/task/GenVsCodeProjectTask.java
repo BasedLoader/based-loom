@@ -24,12 +24,13 @@
 
 package net.fabricmc.loom.task;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -37,7 +38,9 @@ import java.util.stream.Collectors;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import org.apache.commons.io.FileUtils;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import org.apache.tools.ant.taskdefs.condition.Os;
 import org.gradle.api.Project;
 import org.gradle.api.tasks.TaskAction;
@@ -47,78 +50,104 @@ import net.fabricmc.loom.LoomGradlePlugin;
 import net.fabricmc.loom.configuration.ide.RunConfig;
 import net.fabricmc.loom.configuration.ide.RunConfigSettings;
 
-// Recommended vscode plugins:
-// https://marketplace.visualstudio.com/items?itemName=redhat.java
-// https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-debug
+// Recommended vscode plugin pack:
 // https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack
 public class GenVsCodeProjectTask extends AbstractLoomTask {
 	@TaskAction
-	public void genRuns() {
+	public void genRuns() throws IOException {
 		clean(getProject());
 		generate(getProject());
 	}
 
-	public static void clean(Project project) {
-		File projectDir = project.getRootProject().file(".vscode");
+	public static void clean(Project project) throws IOException {
+		Path projectDir = project.getRootDir().toPath().resolve(".vscode");
 
-		if (!projectDir.exists()) {
-			projectDir.mkdir();
+		if (Files.notExists(projectDir)) {
+			Files.createDirectories(projectDir);
 		}
 
-		File launchJson = new File(projectDir, "launch.json");
-
-		if (launchJson.exists()) {
-			launchJson.delete();
-		}
+		final Path launchJson = projectDir.resolve("launch.json");
+		Files.deleteIfExists(launchJson);
 	}
 
-	public static void generate(Project project) {
+	public static void generate(Project project) throws IOException {
 		LoomGradleExtension extension = LoomGradleExtension.get(project);
-		File projectDir = project.getRootProject().file(".vscode");
+		Path projectDir = project.getRootDir().toPath().resolve(".vscode");
 
-		if (!projectDir.exists()) {
-			projectDir.mkdir();
+		if (Files.notExists(projectDir)) {
+			Files.createDirectories(projectDir);
 		}
 
-		File launchJson = new File(projectDir, "launch.json");
-		File tasksJson = new File(projectDir, "tasks.json");
+		final Path launchJson = projectDir.resolve("launch.json");
+		final Path tasksJson = projectDir.resolve("tasks.json");
+		final JsonObject root;
+
+		if (Files.exists(launchJson)) {
+			root = LoomGradlePlugin.GSON.fromJson(Files.readString(launchJson, StandardCharsets.UTF_8), JsonObject.class);
+		} else {
+			root = new JsonObject();
+			root.addProperty("version", "0.2.0");
+		}
+
+		final JsonArray configurations;
+
+		if (root.has("configurations")) {
+			configurations = root.getAsJsonArray("configurations");
+		} else {
+			configurations = new JsonArray();
+			root.add("configurations", configurations);
+		}
 
 		Gson gson = new GsonBuilder().setPrettyPrinting().create();
-
-		VsCodeLaunch launch;
-
-		if (launchJson.exists()) {
-			try {
-				launch = gson.fromJson(FileUtils.readFileToString(launchJson, StandardCharsets.UTF_8), VsCodeLaunch.class);
-			} catch (IOException e) {
-				throw new RuntimeException("Failed to read launch.json", e);
-			}
-		} else {
-			launch = new VsCodeLaunch();
-		}
+		List<VsCodeConfiguration> configurationObjects = new ArrayList<>();
 
 		for (RunConfigSettings settings : extension.getRunConfigs()) {
 			if (!settings.isIdeConfigGenerated()) {
 				continue;
 			}
 
-			launch.add(project, RunConfig.runConfig(project, settings));
+			final RunConfig runConfig = RunConfig.runConfig(project, settings);
+			final VsCodeConfiguration configuration = new VsCodeConfiguration(project, runConfig);
+
+			if (!configuration.tasksBeforeRun.isEmpty()) {
+				configuration.preLaunchTask = "generated_" + runConfig.configName;
+			}
+
+			configurationObjects.add(configuration);
+			final JsonElement configurationJson = LoomGradlePlugin.GSON.toJsonTree(configuration);
+
+			final List<JsonElement> toRemove = new LinkedList<>();
+
+			// Remove any existing with the same name
+			for (JsonElement jsonElement : configurations) {
+				if (!jsonElement.isJsonObject()) {
+					continue;
+				}
+
+				final JsonObject jsonObject = jsonElement.getAsJsonObject();
+
+				if (jsonObject.has("name")) {
+					if (jsonObject.get("name").getAsString().equalsIgnoreCase(configuration.name)) {
+						toRemove.add(jsonElement);
+					}
+				}
+			}
+
+			toRemove.forEach(configurations::remove);
+
+			configurations.add(configurationJson);
 			settings.makeRunDir();
 		}
 
-		String json = LoomGradlePlugin.GSON.toJson(launch);
+		final String json = LoomGradlePlugin.GSON.toJson(root);
 
-		try {
-			FileUtils.writeStringToFile(launchJson, json, StandardCharsets.UTF_8);
-		} catch (IOException e) {
-			throw new RuntimeException("Failed to write launch.json", e);
-		}
+		Files.writeString(launchJson, json, StandardCharsets.UTF_8);
 
 		VsCodeTasks tasks;
 
-		if (tasksJson.exists()) {
+		if (Files.exists(tasksJson)) {
 			try {
-				tasks = gson.fromJson(FileUtils.readFileToString(tasksJson, StandardCharsets.UTF_8), VsCodeTasks.class);
+				tasks = gson.fromJson(Files.readString(tasksJson, StandardCharsets.UTF_8), VsCodeTasks.class);
 			} catch (IOException e) {
 				throw new RuntimeException("Failed to read launch.json", e);
 			}
@@ -126,7 +155,7 @@ public class GenVsCodeProjectTask extends AbstractLoomTask {
 			tasks = new VsCodeTasks();
 		}
 
-		for (VsCodeConfiguration configuration : launch.configurations) {
+		for (VsCodeConfiguration configuration : configurationObjects) {
 			if (configuration.preLaunchTask != null && configuration.tasksBeforeRun != null) {
 				String prefix = Os.isFamily(Os.FAMILY_WINDOWS) ? "gradlew.bat" : "./gradlew";
 				tasks.add(new VsCodeTask(configuration.preLaunchTask, prefix + " " + configuration.tasksBeforeRun.stream()
@@ -141,25 +170,9 @@ public class GenVsCodeProjectTask extends AbstractLoomTask {
 			String jsonTasks = gson.toJson(tasks);
 
 			try {
-				FileUtils.writeStringToFile(tasksJson, jsonTasks, StandardCharsets.UTF_8);
+				Files.writeString(tasksJson, jsonTasks, StandardCharsets.UTF_8);
 			} catch (IOException e) {
 				throw new RuntimeException("Failed to write tasks.json", e);
-			}
-		}
-	}
-
-	private static class VsCodeLaunch {
-		public String version = "0.2.0";
-		public List<VsCodeConfiguration> configurations = new ArrayList<>();
-
-		public void add(Project project, RunConfig runConfig) {
-			if (configurations.stream().noneMatch(config -> Objects.equals(config.name, runConfig.configName))) {
-				VsCodeConfiguration configuration = new VsCodeConfiguration(project, runConfig);
-				configurations.add(configuration);
-
-				if (!configuration.tasksBeforeRun.isEmpty()) {
-					configuration.preLaunchTask = "generated_" + runConfig.configName;
-				}
 			}
 		}
 	}
@@ -187,10 +200,10 @@ public class GenVsCodeProjectTask extends AbstractLoomTask {
 		public String mainClass;
 		public String vmArgs;
 		public String args;
-		public Map<String, String> env = new LinkedHashMap<>();
+		public Map<String, Object> env;
+		public String projectName;
 		public transient List<String> tasksBeforeRun = new ArrayList<>();
 		public String preLaunchTask = null;
-		public String projectName = null;
 
 		VsCodeConfiguration(Project project, RunConfig runConfig) {
 			this.name = runConfig.configName;
@@ -198,8 +211,8 @@ public class GenVsCodeProjectTask extends AbstractLoomTask {
 			this.vmArgs = RunConfig.joinArguments(runConfig.vmArgs);
 			this.args = RunConfig.joinArguments(runConfig.programArgs);
 			this.cwd = "${workspaceFolder}/" + runConfig.runDir;
-			this.projectName = runConfig.vscodeProjectName;
-			this.env.putAll(runConfig.envVariables);
+			this.env = new HashMap<>(runConfig.environmentVariables);
+			this.projectName = runConfig.projectName;
 			this.tasksBeforeRun.addAll(runConfig.vscodeBeforeRun);
 
 			if (project.getRootProject() != project) {

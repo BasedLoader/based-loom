@@ -24,10 +24,9 @@
 
 package net.fabricmc.loom.configuration.providers.mappings.utils;
 
-import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.URL;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Objects;
 
 import org.slf4j.Logger;
@@ -35,18 +34,20 @@ import org.slf4j.LoggerFactory;
 
 import net.fabricmc.loom.api.mappings.layered.MappingContext;
 import net.fabricmc.loom.api.mappings.layered.spec.FileSpec;
-import net.fabricmc.loom.util.DownloadUtil;
+import net.fabricmc.loom.util.download.DownloadException;
 
-public record URLFileSpec(URL url) implements FileSpec {
+public record URLFileSpec(String url) implements FileSpec {
 	private static final Logger LOGGER = LoggerFactory.getLogger(URLFileSpec.class);
 	@Override
 	public Path get(MappingContext context) {
 		try {
-			Path output = context.workingDirectory("%d.URLFileSpec".formatted(Objects.hash(url.toString())));
+			Path output = context.workingDirectory(String.format(Locale.ENGLISH, "%d.URLFileSpec", Objects.hash(url)));
 			LOGGER.info("Downloading {} to {}", url, output);
-			DownloadUtil.downloadIfChanged(url, output.toFile(), LOGGER);
+			context.download(url)
+					.defaultCache()
+					.downloadPath(output);
 			return output;
-		} catch (IOException e) {
+		} catch (DownloadException e) {
 			throw new UncheckedIOException("Failed to download: " + url, e);
 		}
 	}

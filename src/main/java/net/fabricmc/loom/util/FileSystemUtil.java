@@ -1,7 +1,7 @@
 /*
  * This file is part of fabric-loom, licensed under the MIT License (MIT).
  *
- * Copyright (c) 2016-2017 FabricMC
+ * Copyright (c) 2016-2022 FabricMC
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,28 +26,36 @@ package net.fabricmc.loom.util;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystemAlreadyExistsException;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.Map;
 import java.util.function.Supplier;
 
+import dev.architectury.tinyremapper.FileSystemReference;
+
 public final class FileSystemUtil {
-	public record Delegate(FileSystem fs, boolean owner) implements AutoCloseable, Supplier<FileSystem> {
+	public record Delegate(FileSystemReference reference) implements AutoCloseable, Supplier<FileSystem> {
+		public Path getPath(String path, String... more) {
+			return get().getPath(path, more);
+		}
+
 		public byte[] readAllBytes(String path) throws IOException {
-			Path fsPath = get().getPath(path);
+			Path fsPath = getPath(path);
 
 			if (Files.exists(fsPath)) {
 				return Files.readAllBytes(fsPath);
 			} else {
 				throw new NoSuchFileException(fsPath.toString());
+			}
+		}
+
+		public <T> T fromInputStream(IOFunction<InputStream, T> function, String path, String... more) throws IOException {
+			try (InputStream inputStream = Files.newInputStream(getPath(path, more))) {
+				return function.apply(inputStream);
 			}
 		}
 
@@ -57,50 +65,36 @@ public final class FileSystemUtil {
 
 		@Override
 		public void close() throws IOException {
-			if (owner) {
-				fs.close();
-			}
+			reference.close();
 		}
 
 		@Override
 		public FileSystem get() {
-			return fs;
+			return reference.getFs();
+		}
+
+		// TODO cleanup
+		public FileSystem fs() {
+			return get();
 		}
 	}
 
 	private FileSystemUtil() {
 	}
 
-	private static final Map<String, String> jfsArgsCreate = Map.of("create", "true");
-	private static final Map<String, String> jfsArgsEmpty = Collections.emptyMap();
-
 	public static Delegate getJarFileSystem(File file, boolean create) throws IOException {
-		return getJarFileSystem(file.toURI(), create);
+		return new Delegate(FileSystemReference.openJar(file.toPath(), create));
 	}
 
 	public static Delegate getJarFileSystem(Path path, boolean create) throws IOException {
-		return getJarFileSystem(path.toUri(), create);
+		return new Delegate(FileSystemReference.openJar(path, create));
 	}
 
 	public static Delegate getJarFileSystem(Path path) throws IOException {
-		return getJarFileSystem(path, false);
+		return new Delegate(FileSystemReference.openJar(path));
 	}
 
 	public static Delegate getJarFileSystem(URI uri, boolean create) throws IOException {
-		URI jarUri;
-
-		try {
-			jarUri = new URI("jar:" + uri.getScheme(), uri.getHost(), uri.getPath(), uri.getFragment());
-		} catch (URISyntaxException e) {
-			throw new IOException(e);
-		}
-
-		try {
-			return new Delegate(FileSystems.newFileSystem(jarUri, create ? jfsArgsCreate : jfsArgsEmpty), true);
-		} catch (FileSystemAlreadyExistsException e) {
-			return new Delegate(FileSystems.getFileSystem(jarUri), false);
-		} catch (IOException e) {
-			throw new IOException("Could not create JAR file system for " + uri + " (create: " + create + ")", e);
-		}
+		return new Delegate(FileSystemReference.open(uri, create));
 	}
 }

@@ -24,36 +24,20 @@
 
 package net.fabricmc.loom.util;
 
-import java.util.List;
-
-import com.google.common.collect.ImmutableList;
 import org.eclipse.jdt.core.JavaCore;
-import org.gradle.api.plugins.JavaPlugin;
 import org.objectweb.asm.Opcodes;
-
-import net.fabricmc.loom.configuration.RemappedConfigurationEntry;
-import net.fabricmc.loom.configuration.RemappedConfigurationEntry.PublishingMode;
 
 public class Constants {
 	public static final String PLUGIN_ID = "dev.architectury.loom";
 	public static final String LIBRARIES_BASE = "https://libraries.minecraft.net/";
 	public static final String RESOURCES_BASE = "https://resources.download.minecraft.net/";
-	public static final String VERSION_MANIFESTS = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
+	public static final String VERSION_MANIFESTS = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 	public static final String EXPERIMENTAL_VERSIONS = "https://maven.fabricmc.net/net/minecraft/experimental_versions.json";
 	public static final String FABRIC_REPOSITORY = "https://maven.fabricmc.net/";
 
 	public static final int ASM_VERSION = Opcodes.ASM9;
 	public static final String MERCURY_SOURCE_VERSION = JavaCore.VERSION_15;
 	// TODO: once we update Mercury: public static final String MERCURY_SOURCE_VERSION = JavaCore.VERSION_17;
-
-	public static final List<RemappedConfigurationEntry> MOD_COMPILE_ENTRIES = ImmutableList.of(
-			new RemappedConfigurationEntry("modApi", JavaPlugin.API_CONFIGURATION_NAME, true, true, PublishingMode.COMPILE_AND_RUNTIME),
-			new RemappedConfigurationEntry("modImplementation", JavaPlugin.IMPLEMENTATION_CONFIGURATION_NAME, true, true, PublishingMode.RUNTIME_ONLY),
-			new RemappedConfigurationEntry("modCompileOnly", JavaPlugin.COMPILE_ONLY_CONFIGURATION_NAME, true, false, PublishingMode.NONE),
-			new RemappedConfigurationEntry("modCompileOnlyApi", JavaPlugin.COMPILE_ONLY_API_CONFIGURATION_NAME, true, false, PublishingMode.COMPILE_ONLY),
-			new RemappedConfigurationEntry("modRuntimeOnly", JavaPlugin.RUNTIME_ONLY_CONFIGURATION_NAME, false, true, PublishingMode.RUNTIME_ONLY),
-			new RemappedConfigurationEntry("modLocalRuntime", Configurations.LOCAL_RUNTIME, false, true, PublishingMode.NONE)
-	);
 
 	private Constants() {
 	}
@@ -165,6 +149,7 @@ public class Constants {
 		public static final String OUT_REFMAP_FILE = "outRefMapFile";
 		public static final String DEFAULT_OBFUSCATION_ENV = "defaultObfuscationEnv";
 		public static final String QUIET = "quiet";
+		public static final String SHOW_MESSAGE_TYPES = "showMessageTypes";
 
 		private MixinArguments() {
 		}
@@ -192,7 +177,7 @@ public class Constants {
 	}
 
 	public static final class Forge {
-		public static final String LAUNCH_TESTING = "net.minecraftforge.userdev.LaunchTesting";
+		public static final String UNDETERMINED_MAIN_CLASS = "[Forge] Main class has not been determined yet!";
 		public static final String ACCESS_TRANSFORMER_PATH = "META-INF/accesstransformer.cfg";
 		public static final String MIXIN_CONFIGS_MANIFEST_KEY = "MixinConfigs";
 

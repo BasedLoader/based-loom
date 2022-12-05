@@ -31,7 +31,6 @@ import org.gradle.api.Project;
 import org.gradle.api.artifacts.Dependency;
 
 import net.fabricmc.loom.LoomGradleExtension;
-import net.fabricmc.loom.LoomGradlePlugin;
 import net.fabricmc.loom.configuration.DependencyInfo;
 import net.fabricmc.loom.configuration.providers.minecraft.MinecraftProvider;
 import net.fabricmc.loom.extension.LoomFiles;
@@ -77,7 +76,7 @@ public abstract class DependencyProvider {
 		return getExtension().getMinecraftProvider();
 	}
 
-	public boolean isRefreshDeps() {
-		return LoomGradlePlugin.refreshDeps;
+	public boolean refreshDeps() {
+		return getExtension().refreshDeps();
 	}
 }

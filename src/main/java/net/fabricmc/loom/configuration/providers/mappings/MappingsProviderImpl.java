@@ -1,7 +1,7 @@
 /*
  * This file is part of fabric-loom, licensed under the MIT License (MIT).
  *
- * Copyright (c) 2016-2021 FabricMC
+ * Copyright (c) 2016-2022 FabricMC
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,7 +31,6 @@ import java.io.Reader;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -63,10 +62,10 @@ import net.fabricmc.loom.configuration.providers.forge.FieldMigratedMappingsProv
 import net.fabricmc.loom.configuration.providers.forge.SrgProvider;
 import net.fabricmc.loom.configuration.providers.mappings.tiny.MappingsMerger;
 import net.fabricmc.loom.configuration.providers.mappings.tiny.TinyJarInfo;
-import net.fabricmc.loom.configuration.providers.minecraft.MergedMinecraftProvider;
 import net.fabricmc.loom.configuration.providers.minecraft.MinecraftProvider;
 import net.fabricmc.loom.util.Constants;
 import net.fabricmc.loom.util.DeletingFileVisitor;
+import net.fabricmc.loom.util.FileSystemUtil;
 import net.fabricmc.loom.util.ZipUtils;
 import net.fabricmc.loom.util.service.SharedService;
 import net.fabricmc.loom.util.service.SharedServiceManager;
@@ -190,19 +189,19 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 	}
 
 	protected void setup(Project project, MinecraftProvider minecraftProvider, Path inputJar) throws IOException {
-		if (isRefreshDeps()) {
+		if (minecraftProvider.refreshDeps()) {
 			cleanWorkingDirectory(mappingsWorkingDir);
 		}
 
-		if (Files.notExists(tinyMappings) || isRefreshDeps()) {
+		if (Files.notExists(tinyMappings) || minecraftProvider.refreshDeps()) {
 			storeMappings(project, minecraftProvider, inputJar);
 		} else {
-			try (FileSystem fileSystem = FileSystems.newFileSystem(inputJar, (ClassLoader) null)) {
-				extractExtras(fileSystem);
+			try (FileSystemUtil.Delegate fileSystem = FileSystemUtil.getJarFileSystem(inputJar, false)) {
+				extractExtras(fileSystem.get());
 			}
 		}
 
-		if (Files.notExists(tinyMappingsJar) || isRefreshDeps()) {
+		if (Files.notExists(tinyMappingsJar) || minecraftProvider.refreshDeps()) {
 			Files.deleteIfExists(tinyMappingsJar);
 			ZipUtils.add(tinyMappingsJar, "mappings/mappings.tiny", Files.readAllBytes(tinyMappings));
 		}
@@ -215,7 +214,7 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 		manipulateMappings(project, tinyMappingsJar);
 
 		if (extension.shouldGenerateSrgTiny()) {
-			if (Files.notExists(tinyMappingsWithSrg) || isRefreshDeps()) {
+			if (Files.notExists(tinyMappingsWithSrg) || extension.refreshDeps()) {
 				// Merge tiny mappings with srg
 				Stopwatch stopwatch = Stopwatch.createStarted();
 				SrgMerger.ExtraMappings extraMappings = SrgMerger.ExtraMappings.ofMojmapTsrg(getMojmapSrgFileIfPossible(project));
@@ -246,7 +245,7 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 				throw new IllegalStateException("We have to generate srg tiny in a forge environment!");
 			}
 
-			if (Files.notExists(srgToNamedSrg) || isRefreshDeps()) {
+			if (Files.notExists(srgToNamedSrg) || extension.refreshDeps()) {
 				SrgNamedWriter.writeTo(project.getLogger(), srgToNamedSrg, getMappingsWithSrg(), "srg", "named");
 			}
 		}
@@ -299,9 +298,9 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 			return;
 		}
 
-		try (FileSystem fileSystem = FileSystems.newFileSystem(inputJar, (ClassLoader) null)) {
-			extractMappings(fileSystem, baseTinyMappings);
-			extractExtras(fileSystem);
+		try (FileSystemUtil.Delegate delegate = FileSystemUtil.getJarFileSystem(inputJar)) {
+			extractMappings(delegate.fs(), baseTinyMappings);
+			extractExtras(delegate.fs());
 		}
 
 		if (areMappingsMergedV2(baseTinyMappings)) {
@@ -313,14 +312,26 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 			// These are unmerged v2 mappings
 			MappingsMerger.mergeAndSaveMappings(baseTinyMappings, tinyMappings, intermediaryService.get());
 		} else {
-			if (minecraftProvider instanceof MergedMinecraftProvider mergedMinecraftProvider) {
-				// These are merged v1 mappings
-				Files.deleteIfExists(tinyMappings);
-				LOGGER.info(":populating field names");
-				suggestFieldNames(mergedMinecraftProvider, baseTinyMappings, tinyMappings);
-			} else {
-				throw new UnsupportedOperationException("V1 mappings only support merged minecraft");
+			if (LoomGradleExtension.get(project).isForge()) {
+				// (2022-09-11) This is due to ordering issues.
+				// To complete V1 mappings, we need the full MC jar.
+				// On Forge, producing the full MC jar needs the list of all Forge dependencies
+				//   -> needs our remapped dependency from srg to named class names (1.19+)
+				//   -> needs the mappings
+				//   = a circular dependency
+				throw new UnsupportedOperationException("Forge cannot be used with V1 mappings!");
 			}
+
+			final List<Path> minecraftJars = minecraftProvider.getMinecraftJars();
+
+			if (minecraftJars.size() != 1) {
+				throw new UnsupportedOperationException("V1 mappings only support single jar minecraft providers");
+			}
+
+			// These are merged v1 mappings
+			Files.deleteIfExists(tinyMappings);
+			LOGGER.info(":populating field names");
+			suggestFieldNames(minecraftJars.get(0), baseTinyMappings, tinyMappings);
 		}
 	}
 
@@ -357,7 +368,7 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 	}
 
 	private boolean isMCP(Path path) throws IOException {
-		try (FileSystem fs = FileSystems.newFileSystem(path, (ClassLoader) null)) {
+		try (FileSystemUtil.Delegate fs = FileSystemUtil.getJarFileSystem(path, false)) {
 			return Files.exists(fs.getPath("fields.csv")) && Files.exists(fs.getPath("methods.csv"));
 		}
 	}
@@ -383,8 +394,8 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 	}
 
 	public static void extractMappings(Path jar, Path extractTo) throws IOException {
-		try (FileSystem unmergedIntermediaryFs = FileSystems.newFileSystem(jar, (ClassLoader) null)) {
-			extractMappings(unmergedIntermediaryFs, extractTo);
+		try (FileSystemUtil.Delegate delegate = FileSystemUtil.getJarFileSystem(jar)) {
+			extractMappings(delegate.fs(), extractTo);
 		}
 	}
 
@@ -458,9 +469,9 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 		}
 	}
 
-	private void suggestFieldNames(MergedMinecraftProvider minecraftProvider, Path oldMappings, Path newMappings) {
+	private void suggestFieldNames(Path inputJar, Path oldMappings, Path newMappings) {
 		Command command = new CommandProposeFieldNames();
-		runCommand(command, minecraftProvider.getMergedJar().toFile().getAbsolutePath(),
+		runCommand(command, inputJar.toFile().getAbsolutePath(),
 						oldMappings.toAbsolutePath().toString(),
 						newMappings.toAbsolutePath().toString());
 	}
@@ -529,7 +540,7 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 			Path path = mappingsWorkingDir.resolve("mappings-mixin-" + namespace + ".tiny");
 
 			try {
-				if (Files.notExists(path) || isRefreshDeps()) {
+				if (Files.notExists(path) || loom.refreshDeps()) {
 					List<String> lines = new ArrayList<>(Files.readAllLines(loom.shouldGenerateSrgTiny() ? tinyMappingsWithSrg : tinyMappings));
 					lines.set(0, lines.get(0).replace("intermediary", "yraidemretni").replace(namespace, "intermediary"));
 					Files.deleteIfExists(path);
@@ -544,10 +555,6 @@ public class MappingsProviderImpl implements MappingsProvider, SharedService {
 	}
 
 	public record UnpickMetadata(String unpickGroup, String unpickVersion) {
-	}
-
-	protected static boolean isRefreshDeps() {
-		return LoomGradlePlugin.refreshDeps;
 	}
 
 	@Override

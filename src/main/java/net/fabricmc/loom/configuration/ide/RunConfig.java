@@ -24,26 +24,29 @@
 
 package net.fabricmc.loom.configuration.ide;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedList;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import org.apache.tools.ant.util.StringUtils;
 import org.gradle.api.Project;
+import org.gradle.api.artifacts.ModuleVersionIdentifier;
+import org.gradle.api.artifacts.ResolvedArtifact;
+import org.gradle.api.artifacts.ResolvedModuleVersion;
 import org.gradle.api.tasks.SourceSet;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
 import org.w3c.dom.Document;
@@ -62,7 +65,6 @@ public class RunConfig {
 	public String configName;
 	public String eclipseProjectName;
 	public String ideaModuleName;
-	public String vscodeProjectName;
 	public String mainClass;
 	public String runDirIdeaUrl;
 	public String runDir;
@@ -70,8 +72,9 @@ public class RunConfig {
 	public List<String> vmArgs = new ArrayList<>();
 	public List<String> programArgs = new ArrayList<>();
 	public List<String> vscodeBeforeRun = new ArrayList<>();
-	public final Map<String, String> envVariables = new HashMap<>();
 	public SourceSet sourceSet;
+	public Map<String, Object> environmentVariables;
+	public String projectName;
 
 	public Element genRuns(Element doc) {
 		Element root = this.addXml(doc, "component", ImmutableMap.of("name", "ProjectRunConfigurationManager"));
@@ -87,14 +90,6 @@ public class RunConfig {
 
 		if (!programArgs.isEmpty()) {
 			this.addXml(root, "option", ImmutableMap.of("name", "PROGRAM_PARAMETERS", "value", joinArguments(programArgs)));
-		}
-
-		if (!envVariables.isEmpty()) {
-			Element envs = this.addXml(root, "envs", ImmutableMap.of());
-
-			for (Map.Entry<String, String> envEntry : envVariables.entrySet()) {
-				this.addXml(envs, "env", ImmutableMap.of("name", envEntry.getKey(), "value", envEntry.getValue()));
-			}
 		}
 
 		return root;
@@ -120,7 +115,6 @@ public class RunConfig {
 	private static void populate(Project project, LoomGradleExtension extension, RunConfig runConfig, String environment) {
 		runConfig.configName += extension.isRootProject() ? "" : " (" + project.getPath() + ")";
 		runConfig.eclipseProjectName = project.getExtensions().getByType(EclipseModel.class).getProject().getName();
-		runConfig.vscodeProjectName = extension.isRootProject() ? "" : StringUtils.removePrefix(project.getPath(), ":");
 
 		runConfig.mainClass = "net.fabricmc.devlaunchinjector.Main";
 		runConfig.vmArgs.add("-Dfabric.dli.config=" + encodeEscaped(extension.getFiles().getDevLauncherConfig().getAbsolutePath()));
@@ -176,7 +170,6 @@ public class RunConfig {
 		}
 
 		RunConfig runConfig = new RunConfig();
-		runConfig.envVariables.putAll(settings.envVariables);
 		runConfig.configName = configName;
 		populate(project, extension, runConfig, environment);
 		runConfig.ideaModuleName = IdeaUtils.getIdeaModuleName(new SourceSetReference(sourceSet, project));
@@ -189,6 +182,9 @@ public class RunConfig {
 		runConfig.programArgs.addAll(settings.getProgramArgs());
 		runConfig.vmArgs.addAll(settings.getVmArgs());
 		runConfig.vmArgs.add("-Dfabric.dli.main=" + getMainClass(environment, extension, defaultMain));
+		runConfig.environmentVariables = new HashMap<>();
+		runConfig.environmentVariables.putAll(settings.getEnvironmentVariables());
+		runConfig.projectName = project.getName();
 
 		for (Consumer<RunConfig> consumer : extension.getSettingsPostEdit()) {
 			consumer.accept(runConfig);
@@ -221,27 +217,17 @@ public class RunConfig {
 		dummyConfig = dummyConfig.replace("%RUN_DIRECTORY%", runDir);
 		dummyConfig = dummyConfig.replace("%PROGRAM_ARGS%", joinArguments(programArgs).replaceAll("\"", "&quot;"));
 		dummyConfig = dummyConfig.replace("%VM_ARGS%", joinArguments(vmArgs).replaceAll("\"", "&quot;"));
-
-		String envs = "";
-
-		if (!envVariables.isEmpty()) {
-			StringBuilder builder = new StringBuilder("<envs>");
-
-			for (Map.Entry<String, String> env : envVariables.entrySet()) {
-				builder.append("<env name=\"");
-				builder.append(env.getKey().replaceAll("\"", "&quot;"));
-				builder.append("\" value=\"");
-				builder.append(env.getValue().replaceAll("\"", "&quot;"));
-				builder.append("\"/>");
-			}
-
-			builder.append("</envs>");
-			envs = builder.toString();
-		}
-
-		dummyConfig = dummyConfig.replace("%ENVS%", envs);
+		dummyConfig = dummyConfig.replace("%IDEA_ENV_VARS%", getEnvVars("<env name=\"%s\" value=\"%s\"/>"));
+		dummyConfig = dummyConfig.replace("%ECLIPSE_ENV_VARS%", getEnvVars("<mapEntry key=\"%s\" value=\"%s\"/>"));
 
 		return dummyConfig;
+	}
+
+	private String getEnvVars(String pattern) {
+		return environmentVariables.entrySet().stream()
+			.map(entry ->
+				pattern.formatted(entry.getKey(), entry.getValue().toString())
+			).collect(Collectors.joining());
 	}
 
 	public static String joinArguments(List<String> args) {
@@ -296,14 +282,6 @@ public class RunConfig {
 	}
 
 	public List<String> getExcludedLibraryPaths(Project project) {
-		if (true) {
-			/*
-				This whole excluded libraries idea breaks down when the server library version does not match the client.
-				This is a quick change to disable it meanwhile a proper solution is sorted.
-			 */
-			return Collections.emptyList();
-		}
-
 		if (!environment.equals("server")) {
 			return Collections.emptyList();
 		}
@@ -315,17 +293,30 @@ public class RunConfig {
 			return Collections.emptyList();
 		}
 
-		final Set<File> allLibraries = project.getConfigurations().getByName(Constants.Configurations.MINECRAFT_DEPENDENCIES).getFiles();
-		final Set<File> serverLibraries = project.getConfigurations().getByName(Constants.Configurations.MINECRAFT_SERVER_DEPENDENCIES).getFiles();
+		final Set<ResolvedArtifact> allLibraries = getArtifacts(project, Constants.Configurations.MINECRAFT_DEPENDENCIES);
+		final Set<ResolvedArtifact> serverLibraries = getArtifacts(project, Constants.Configurations.MINECRAFT_SERVER_DEPENDENCIES);
 		final List<String> clientOnlyLibraries = new LinkedList<>();
 
-		for (File commonLibrary : allLibraries) {
-			if (!serverLibraries.contains(commonLibrary)) {
-				clientOnlyLibraries.add(commonLibrary.getAbsolutePath());
+		for (ResolvedArtifact library : allLibraries) {
+			if (!containsLibrary(serverLibraries, library.getModuleVersion().getId())) {
+				clientOnlyLibraries.add(library.getFile().getAbsolutePath());
 			}
 		}
 
 		return clientOnlyLibraries;
+	}
+
+	private static Set<ResolvedArtifact> getArtifacts(Project project, String configuration) {
+		return project.getConfigurations().getByName(configuration)
+				.getResolvedConfiguration()
+				.getResolvedArtifacts();
+	}
+
+	private static boolean containsLibrary(Set<ResolvedArtifact> artifacts, ModuleVersionIdentifier identifier) {
+		return artifacts.stream()
+				.map(ResolvedArtifact::getModuleVersion)
+				.map(ResolvedModuleVersion::getId)
+				.anyMatch(test -> test.getGroup().equals(identifier.getGroup()) && test.getName().equals(identifier.getName()));
 	}
 
 	private static String encodeEscaped(String s) {
@@ -335,7 +326,7 @@ public class RunConfig {
 			char c = s.charAt(i);
 
 			if (c == '@' && i > 0 && s.charAt(i - 1) == '@' || c == ' ') {
-				ret.append(String.format("@@%04x", (int) c));
+				ret.append(String.format(Locale.ENGLISH, "@@%04x", (int) c));
 			} else {
 				ret.append(c);
 			}

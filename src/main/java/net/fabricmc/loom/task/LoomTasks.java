@@ -34,10 +34,12 @@ import org.gradle.api.tasks.TaskProvider;
 import net.fabricmc.loom.LoomGradleExtension;
 import net.fabricmc.loom.configuration.ide.RunConfigSettings;
 import net.fabricmc.loom.configuration.providers.minecraft.MinecraftJarConfiguration;
+import net.fabricmc.loom.configuration.providers.minecraft.MinecraftVersionMeta;
 import net.fabricmc.loom.task.launch.GenerateDLIConfigTask;
 import net.fabricmc.loom.task.launch.GenerateLog4jConfigTask;
 import net.fabricmc.loom.task.launch.GenerateRemapClasspathTask;
 import net.fabricmc.loom.util.Constants;
+import net.fabricmc.loom.util.gradle.GradleUtils;
 
 public final class LoomTasks {
 	private LoomTasks() {
@@ -84,10 +86,9 @@ public final class LoomTasks {
 
 		registerIDETasks(tasks);
 		registerRunTasks(tasks, project);
-		registerLaunchSettings(project);
 
 		// Must be done in afterEvaluate to allow time for the build script to configure the jar config.
-		project.afterEvaluate(p -> {
+		GradleUtils.afterSuccessfulEvaluation(project, () -> {
 			LoomGradleExtension extension = LoomGradleExtension.get(project);
 
 			if (extension.getMinecraftJarConfiguration().get() == MinecraftJarConfiguration.SERVER_ONLY) {
@@ -95,7 +96,14 @@ public final class LoomTasks {
 				return;
 			}
 
-			registerClientSetupTasks(project.getTasks(), extension.getMinecraftProvider().getVersionInfo().hasNativesToExtract());
+			final MinecraftVersionMeta versionInfo = extension.getMinecraftProvider().getVersionInfo();
+
+			if (versionInfo == null) {
+				// Something has gone wrong, don't register the task.
+				return;
+			}
+
+			registerClientSetupTasks(project.getTasks(), versionInfo.hasNativesToExtract());
 		});
 	}
 
@@ -143,7 +151,7 @@ public final class LoomTasks {
 		extension.getRunConfigs().create("server", RunConfigSettings::server);
 
 		// Remove the client or server run config when not required. Done by name to not remove any possible custom run configs
-		project.afterEvaluate(p -> {
+		GradleUtils.afterSuccessfulEvaluation(project, () -> {
 			String taskName = switch (extension.getMinecraftJarConfiguration().get()) {
 			case SERVER_ONLY -> "client";
 			case CLIENT_ONLY -> "server";
@@ -180,17 +188,6 @@ public final class LoomTasks {
 			task.setDescription("Setup the required files to launch the Minecraft client");
 			task.setGroup(Constants.TaskGroup.FABRIC);
 		});
-	}
-
-	private static void registerLaunchSettings(Project project) {
-		LoomGradleExtension extension = LoomGradleExtension.get(project);
-		Preconditions.checkArgument(extension.getLaunchConfigs().size() == 0, "Launch configurations must not be registered before loom");
-		extension.getLaunchConfigs().create("client");
-		extension.getLaunchConfigs().create("server");
-
-		if (extension.isForge()) {
-			extension.getLaunchConfigs().create("data");
-		}
 	}
 
 	public static Provider<Task> getIDELaunchConfigureTaskName(Project project) {

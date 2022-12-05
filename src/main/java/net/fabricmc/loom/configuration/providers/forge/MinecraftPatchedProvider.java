@@ -30,9 +30,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
-import java.net.URI;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -54,7 +52,6 @@ import java.util.stream.Stream;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import de.oceanlabs.mcp.mcinjector.adaptors.ParameterAnnotationFixer;
 import dev.architectury.tinyremapper.InputTag;
 import dev.architectury.tinyremapper.NonClassCopyMode;
@@ -72,10 +69,8 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.ClassNode;
 
 import net.fabricmc.loom.LoomGradleExtension;
-import net.fabricmc.loom.LoomGradlePlugin;
 import net.fabricmc.loom.configuration.accesstransformer.AccessTransformerJarProcessor;
-import net.fabricmc.loom.configuration.providers.forge.mcpconfig.McpConfigData;
-import net.fabricmc.loom.configuration.providers.forge.mcpconfig.McpConfigStep;
+import net.fabricmc.loom.configuration.providers.forge.mcpconfig.McpConfigProvider;
 import net.fabricmc.loom.configuration.providers.forge.mcpconfig.McpExecutor;
 import net.fabricmc.loom.configuration.providers.forge.minecraft.ForgeMinecraftProvider;
 import net.fabricmc.loom.configuration.providers.minecraft.MinecraftProvider;
@@ -167,7 +162,7 @@ public class MinecraftPatchedProvider {
 	}
 
 	private void checkCache() throws IOException {
-		if (LoomGradlePlugin.refreshDeps || Stream.of(getGlobalCaches()).anyMatch(Files::notExists)
+		if (getExtension().refreshDeps() || Stream.of(getGlobalCaches()).anyMatch(Files::notExists)
 				|| !isPatchedJarUpToDate(minecraftPatchedJar)) {
 			cleanAllCache();
 		}
@@ -181,10 +176,8 @@ public class MinecraftPatchedProvider {
 
 		if (Files.notExists(minecraftSrgJar)) {
 			this.dirty = true;
-			McpConfigData data = getExtension().getMcpConfigProvider().getData();
-			List<McpConfigStep> steps = data.steps().get(type.mcpId);
-			McpExecutor executor = new McpExecutor(project, minecraftProvider, Files.createTempDirectory("loom-mcp"), steps, data.functions());
-			Path output = executor.executeUpTo("rename");
+			McpExecutor executor = createMcpExecutor(Files.createTempDirectory("loom-mcp"));
+			Path output = executor.enqueue("rename").execute();
 			Files.copy(output, minecraftSrgJar);
 		}
 
@@ -242,7 +235,7 @@ public class MinecraftPatchedProvider {
 		logger.info(":fixing parameter annotations for " + jarFile.toAbsolutePath());
 		Stopwatch stopwatch = Stopwatch.createStarted();
 
-		try (FileSystem fs = FileSystems.newFileSystem(new URI("jar:" + jarFile.toUri()), ImmutableMap.of("create", false))) {
+		try (FileSystemUtil.Delegate fs = FileSystemUtil.getJarFileSystem(jarFile, false)) {
 			ThreadingUtils.TaskCompleter completer = ThreadingUtils.taskCompleter();
 
 			for (Path file : (Iterable<? extends Path>) Files.walk(fs.getPath("/"))::iterator) {
@@ -276,7 +269,7 @@ public class MinecraftPatchedProvider {
 		logger.info(":deleting parameter names for " + jarFile.toAbsolutePath());
 		Stopwatch stopwatch = Stopwatch.createStarted();
 
-		try (FileSystem fs = FileSystems.newFileSystem(new URI("jar:" + jarFile.toUri()), ImmutableMap.of("create", false))) {
+		try (FileSystemUtil.Delegate fs = FileSystemUtil.getJarFileSystem(jarFile, false)) {
 			ThreadingUtils.TaskCompleter completer = ThreadingUtils.taskCompleter();
 			Pattern vignetteParameters = Pattern.compile("p_[0-9a-zA-Z]+_(?:[0-9a-zA-Z]+_)?");
 
@@ -412,7 +405,7 @@ public class MinecraftPatchedProvider {
 			remapper.finish();
 		}
 
-		copyUserdevFiles(forgeUserdevJar, minecraftPatchedSrgJar);
+		copyUserdevFiles(forgeUserdevJar, mcOutput);
 		applyLoomPatchVersion(mcOutput);
 	}
 
@@ -546,6 +539,15 @@ public class MinecraftPatchedProvider {
 				manifest.write(stream);
 			}
 		}
+	}
+
+	public McpExecutor createMcpExecutor(Path cache) {
+		McpConfigProvider provider = getExtension().getMcpConfigProvider();
+		return new McpExecutor(project, minecraftProvider, cache, provider, type.mcpId);
+	}
+
+	public Path getMinecraftSrgJar() {
+		return minecraftSrgJar;
 	}
 
 	public Path getMinecraftPatchedSrgJar() {

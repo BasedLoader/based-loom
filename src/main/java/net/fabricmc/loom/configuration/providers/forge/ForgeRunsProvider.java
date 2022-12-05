@@ -39,173 +39,127 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.gradle.api.NamedDomainObjectSet;
 import org.gradle.api.Project;
 
 import net.fabricmc.loom.LoomGradleExtension;
-import net.fabricmc.loom.api.ForgeLocalMod;
 import net.fabricmc.loom.api.ModSettings;
-import net.fabricmc.loom.configuration.ide.RunConfigSettings;
-import net.fabricmc.loom.configuration.launch.LaunchProviderSettings;
 import net.fabricmc.loom.util.Constants;
 import net.fabricmc.loom.util.DependencyDownloader;
 import net.fabricmc.loom.util.gradle.SourceSetHelper;
 
-public class ForgeRunsProvider {
+public class ForgeRunsProvider implements ConfigValue.Resolver {
 	private final Project project;
 	private final LoomGradleExtension extension;
 	private final JsonObject json;
+	private final NamedDomainObjectSet<ForgeRunTemplate> templates;
 
 	public ForgeRunsProvider(Project project, JsonObject json) {
 		this.project = project;
 		this.extension = LoomGradleExtension.get(project);
 		this.json = json;
+		this.templates = project.getObjects().namedDomainObjectSet(ForgeRunTemplate.class);
+		readTemplates();
 	}
 
-	public static void provide(Project project) {
-		LoomGradleExtension extension = LoomGradleExtension.get(project);
-		JsonObject json = extension.getForgeUserdevProvider().getJson();
-		ForgeRunsProvider provider = new ForgeRunsProvider(project, json);
-
+	private void readTemplates() {
 		for (Map.Entry<String, JsonElement> entry : json.getAsJsonObject("runs").entrySet()) {
-			LaunchProviderSettings launchSettings = extension.getLaunchConfigs().findByName(entry.getKey());
-			RunConfigSettings settings = extension.getRunConfigs().findByName(entry.getKey());
-			JsonObject value = entry.getValue().getAsJsonObject();
-
-			if (launchSettings != null) {
-				launchSettings.evaluateLater(() -> {
-					if (value.has("args")) {
-						launchSettings.arg(StreamSupport.stream(value.getAsJsonArray("args").spliterator(), false)
-								.map(JsonElement::getAsString)
-								.map(provider::processTemplates)
-								.collect(Collectors.toList()));
-					}
-
-					if (value.has("props")) {
-						for (Map.Entry<String, JsonElement> props : value.getAsJsonObject("props").entrySet()) {
-							String string = provider.processTemplates(props.getValue().getAsString());
-
-							launchSettings.property(props.getKey(), string);
-						}
-					}
-				});
-			}
-
-			if (settings != null) {
-				settings.evaluateLater(() -> {
-					settings.defaultMainClass(value.getAsJsonPrimitive("main").getAsString());
-
-					if (value.has("jvmArgs")) {
-						settings.vmArgs(StreamSupport.stream(value.getAsJsonArray("jvmArgs").spliterator(), false)
-								.map(JsonElement::getAsString)
-								.map(provider::processTemplates)
-								.collect(Collectors.toList()));
-					}
-
-					if (value.has("env")) {
-						for (Map.Entry<String, JsonElement> env : value.getAsJsonObject("env").entrySet()) {
-							String string = provider.processTemplates(env.getValue().getAsString());
-
-							settings.envVariables.put(env.getKey(), string);
-						}
-					}
-				});
-			}
+			ForgeRunTemplate template = ForgeRunTemplate.fromJson(entry.getValue().getAsJsonObject());
+			templates.add(template);
 		}
 	}
 
-	public String processTemplates(String string) {
-		if (string.startsWith("{")) {
-			String key = string.substring(1, string.length() - 1);
+	public NamedDomainObjectSet<ForgeRunTemplate> getTemplates() {
+		return templates;
+	}
 
-			// TODO: Look into ways to not hardcode
-			if (key.equals("runtime_classpath")) {
-				string = runtimeClasspath().stream()
-						.map(File::getAbsolutePath)
-						.collect(Collectors.joining(File.pathSeparator));
-			} else if (key.equals("minecraft_classpath")) {
-				string = minecraftClasspath().stream()
-						.map(File::getAbsolutePath)
-						.collect(Collectors.joining(File.pathSeparator));
-			} else if (key.equals("runtime_classpath_file")) {
-				Path path = extension.getFiles().getProjectPersistentCache().toPath().resolve("forge_runtime_classpath.txt");
+	public static ForgeRunsProvider create(Project project) {
+		JsonObject json = LoomGradleExtension.get(project).getForgeUserdevProvider().getJson();
+		return new ForgeRunsProvider(project, json);
+	}
 
-				try {
-					Files.writeString(path, runtimeClasspath().stream()
-									.map(File::getAbsolutePath)
-									.collect(Collectors.joining("\n")),
-							StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-				} catch (IOException e) {
-					throw new RuntimeException(e);
-				}
+	@Override
+	public String resolve(ConfigValue.Variable variable) {
+		String key = variable.name();
+		String string = '{' + key + '}';
 
-				string = path.toAbsolutePath().toString();
-			} else if (key.equals("minecraft_classpath_file")) {
-				Path path = extension.getFiles().getProjectPersistentCache().toPath().resolve("forge_minecraft_classpath.txt");
+		// TODO: Look into ways to not hardcode
+		if (key.equals("runtime_classpath")) {
+			string = runtimeClasspath().stream()
+					.map(File::getAbsolutePath)
+					.collect(Collectors.joining(File.pathSeparator));
+		} else if (key.equals("minecraft_classpath")) {
+			string = minecraftClasspath().stream()
+					.map(File::getAbsolutePath)
+					.collect(Collectors.joining(File.pathSeparator));
+		} else if (key.equals("runtime_classpath_file")) {
+			Path path = extension.getFiles().getProjectPersistentCache().toPath().resolve("forge_runtime_classpath.txt");
 
-				try {
-					Files.writeString(path, minecraftClasspath().stream()
-									.map(File::getAbsolutePath)
-									.collect(Collectors.joining("\n")),
-							StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-				} catch (IOException e) {
-					throw new RuntimeException(e);
-				}
-
-				string = path.toAbsolutePath().toString();
-			} else if (key.equals("asset_index")) {
-				string = extension.getMinecraftProvider().getVersionInfo().assetIndex().fabricId(extension.getMinecraftProvider().minecraftVersion());
-			} else if (key.equals("assets_root")) {
-				string = new File(extension.getFiles().getUserCache(), "assets").getAbsolutePath();
-			} else if (key.equals("natives")) {
-				string = extension.getFiles().getNativesDirectory(project).getAbsolutePath();
-			} else if (key.equals("source_roots")) {
-				// Use a set-valued multimap for deduplicating paths.
-				// It could be done using Stream.distinct before but that doesn't work if
-				// you have *both* a ModSettings and a ForgeLocalMod with the same name.
-				Multimap<String, String> modClasses = MultimapBuilder.hashKeys().linkedHashSetValues().build();
-
-				for (ModSettings mod : extension.getMods()) {
-					for (File file : SourceSetHelper.getClasspath(mod, project)) {
-						modClasses.put(mod.getName(), file.getAbsolutePath());
-					}
-				}
-
-				for (ForgeLocalMod localMod : extension.getForge().getLocalMods()) {
-					String sourceSetName = localMod.getName();
-
-					localMod.getSourceSets().flatMap(sourceSet -> Stream.concat(
-							Stream.of(sourceSet.getOutput().getResourcesDir()),
-							sourceSet.getOutput().getClassesDirs().getFiles().stream())
-					).map(File::getAbsolutePath).forEach(path -> modClasses.put(sourceSetName, path));
-				}
-
-				string = modClasses.entries().stream()
-						.map(entry -> entry.getKey() + "%%" + entry.getValue())
-						.collect(Collectors.joining(File.pathSeparator));
-			} else if (key.equals("mcp_mappings")) {
-				string = "loom.stub";
-			} else if (json.has(key)) {
-				JsonElement element = json.get(key);
-
-				if (element.isJsonArray()) {
-					string = StreamSupport.stream(element.getAsJsonArray().spliterator(), false)
-							.map(JsonElement::getAsString)
-							.flatMap(str -> {
-								if (str.contains(":")) {
-									return DependencyDownloader.download(project, str, false, false).getFiles().stream()
-											.map(File::getAbsolutePath)
-											.filter(dep -> !dep.contains("bootstraplauncher")); // TODO: Hack
-								}
-
-								return Stream.of(str);
-							})
-							.collect(Collectors.joining(File.pathSeparator));
-				} else {
-					string = element.toString();
-				}
-			} else {
-				project.getLogger().warn("Unrecognized template! " + string);
+			try {
+				Files.writeString(path, runtimeClasspath().stream()
+								.map(File::getAbsolutePath)
+								.collect(Collectors.joining("\n")),
+						StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+			} catch (IOException e) {
+				throw new RuntimeException(e);
 			}
+
+			string = path.toAbsolutePath().toString();
+		} else if (key.equals("minecraft_classpath_file")) {
+			Path path = extension.getFiles().getProjectPersistentCache().toPath().resolve("forge_minecraft_classpath.txt");
+
+			try {
+				Files.writeString(path, minecraftClasspath().stream()
+								.map(File::getAbsolutePath)
+								.collect(Collectors.joining("\n")),
+						StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+			} catch (IOException e) {
+				throw new RuntimeException(e);
+			}
+
+			string = path.toAbsolutePath().toString();
+		} else if (key.equals("asset_index")) {
+			string = extension.getMinecraftProvider().getVersionInfo().assetIndex().fabricId(extension.getMinecraftProvider().minecraftVersion());
+		} else if (key.equals("assets_root")) {
+			string = new File(extension.getFiles().getUserCache(), "assets").getAbsolutePath();
+		} else if (key.equals("natives")) {
+			string = extension.getFiles().getNativesDirectory(project).getAbsolutePath();
+		} else if (key.equals("source_roots")) {
+			// Use a set-valued multimap for deduplicating paths.
+			Multimap<String, String> modClasses = MultimapBuilder.hashKeys().linkedHashSetValues().build();
+
+			for (ModSettings mod : extension.getMods()) {
+				for (File file : SourceSetHelper.getClasspath(mod, project)) {
+					modClasses.put(mod.getName(), file.getAbsolutePath());
+				}
+			}
+
+			string = modClasses.entries().stream()
+					.map(entry -> entry.getKey() + "%%" + entry.getValue())
+					.collect(Collectors.joining(File.pathSeparator));
+		} else if (key.equals("mcp_mappings")) {
+			string = "loom.stub";
+		} else if (json.has(key)) {
+			JsonElement element = json.get(key);
+
+			if (element.isJsonArray()) {
+				string = StreamSupport.stream(element.getAsJsonArray().spliterator(), false)
+						.map(JsonElement::getAsString)
+						.flatMap(str -> {
+							if (str.contains(":")) {
+								return DependencyDownloader.download(project, str, false, false).getFiles().stream()
+										.map(File::getAbsolutePath)
+										.filter(dep -> !dep.contains("bootstraplauncher")); // TODO: Hack
+							}
+
+							return Stream.of(str);
+						})
+						.collect(Collectors.joining(File.pathSeparator));
+			} else {
+				string = element.toString();
+			}
+		} else {
+			project.getLogger().warn("Unrecognized template! " + string);
 		}
 
 		return string;

@@ -37,7 +37,6 @@ import dev.architectury.tinyremapper.TinyRemapper;
 import org.gradle.api.Project;
 
 import net.fabricmc.loom.LoomGradleExtension;
-import net.fabricmc.loom.LoomGradlePlugin;
 import net.fabricmc.loom.api.mappings.layered.MappingsNamespace;
 import net.fabricmc.loom.configuration.providers.mappings.MappingsProviderImpl;
 import net.fabricmc.loom.configuration.providers.minecraft.MinecraftProvider;
@@ -71,7 +70,7 @@ public abstract class AbstractMappedMinecraftProvider<M extends MinecraftProvide
 		final List<RemappedJars> remappedJars = getRemappedJars();
 		assert !remappedJars.isEmpty();
 
-		if (!areOutputsValid(remappedJars) || LoomGradlePlugin.refreshDeps) {
+		if (!areOutputsValid(remappedJars) || extension.refreshDeps()) {
 			try {
 				remapInputs(remappedJars);
 			} catch (Throwable t) {

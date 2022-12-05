@@ -8,8 +8,9 @@ plugins {
 	id 'checkstyle'
 	id 'jacoco'
 	id 'codenarc'
-	id "org.jetbrains.kotlin.jvm" version "1.5.31" // Must match the version included with gradle.
-	id "com.diffplug.spotless" version "6.3.0"
+	id "org.jetbrains.kotlin.jvm" version "1.6.10" // Must match the version included with gradle.
+	id "com.diffplug.spotless" version "6.8.0"
+	id "org.gradle.test-retry" version "1.4.1"
 }
 
 java {
@@ -24,23 +25,23 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
 	kotlinOptions {
-		jvmTarget = "16" // Change to 17 when updating gradle/kotlin to 1.6.10
+		jvmTarget = "17"
 	}
 }
 
 group = "com.basedloader"
 archivesBaseName = project.name
-def baseVersion = '0.12.0'
-def runNumber = System.getenv("GITHUB_RUN_NUMBER") ?: "9999"
+def baseVersion = '1.0'
 
-def isSnapshot = System.getenv("PR_NUM") != null
+def ENV = System.getenv()
+def runNumber = ENV.GITHUB_RUN_NUMBER ?: "9999"
 
-def buildNum = "release #$runNumber"
+def isSnapshot = ENV.PR_NUM != null
 
 if (!isSnapshot) {
 	version = baseVersion + "." + runNumber
 } else {
-	version = baseVersion + "-PR." + System.getenv("PR_NUM") + "." + runNumber
+	version = baseVersion + "-PR." + ENV.PR_NUM + "." + runNumber
 }
 
 logger.lifecycle(":building plugin v${version}")
@@ -55,7 +56,6 @@ repositories {
 			excludeGroupByRegex "org\\.eclipse\\.?.*"
 		}
 	}
-	mavenLocal()
 }
 
 configurations {
@@ -82,7 +82,7 @@ dependencies {
 	// libraries
 	implementation ('commons-io:commons-io:2.11.0')
 	implementation ('com.google.code.gson:gson:2.9.0')
-	implementation ('com.fasterxml.jackson.core:jackson-databind:2.13.2.2')
+	implementation ('com.fasterxml.jackson.core:jackson-databind:2.13.3')
 	implementation ('com.google.guava:guava:31.1-jre')
 	implementation ('org.ow2.asm:asm:9.3')
 	implementation ('org.ow2.asm:asm-analysis:9.3')
@@ -92,13 +92,13 @@ dependencies {
 	implementation ('me.tongfei:progressbar:0.9.0')
 
 	// game handling utils
-	implementation ('net.fabricmc:stitch:0.6.1') {
+	implementation ('net.fabricmc:stitch:0.6.2') {
 		exclude module: 'mercury'
 		exclude module: 'enigma'
 	}
 
 	// tinyfile management
-	implementation ('dev.architectury:tiny-remapper:1.7.19')
+	implementation ('dev.architectury:tiny-remapper:1.8.20')
 	implementation 'net.fabricmc:access-widener:2.1.0'
 	implementation 'net.fabricmc:mapping-io:0.2.1'
 
@@ -120,7 +120,7 @@ dependencies {
 	}
 
 	// Kapt integration
-	compileOnly('org.jetbrains.kotlin:kotlin-gradle-plugin:1.5.31') // Must match the version included with gradle.
+	compileOnly('org.jetbrains.kotlin:kotlin-gradle-plugin:1.6.10') // Must match the version included with gradle.
 
 	// Forge patches
 	implementation ('net.minecraftforge:installertools:1.2.0')
@@ -128,6 +128,7 @@ dependencies {
 	implementation ('org.cadixdev:lorenz-asm:0.5.3')
 	implementation ('de.oceanlabs.mcp:mcinjector:3.8.0')
 	implementation ('com.opencsv:opencsv:5.4')
+	implementation ('net.minecraftforge:DiffPatch:2.0.7')
 
 	// Testing
 	testImplementation(gradleTestKit())
@@ -135,14 +136,18 @@ dependencies {
 		exclude module: 'groovy-all'
 	}
 	testImplementation 'org.junit.jupiter:junit-jupiter-engine:5.8.2'
-	testImplementation ('io.javalin:javalin:4.4.0') {
+	testImplementation ('io.javalin:javalin:4.6.1') {
 		exclude group: 'org.jetbrains.kotlin'
 	}
 	testImplementation 'net.fabricmc:fabric-installer:0.9.0'
-	testImplementation 'org.mockito:mockito-core:4.4.0'
+	testImplementation 'org.mockito:mockito-core:4.6.1'
 
 	compileOnly 'org.jetbrains:annotations:23.0.0'
 	testCompileOnly 'org.jetbrains:annotations:23.0.0'
+
+	testCompileOnly ('net.fabricmc:sponge-mixin:0.11.4+mixin.0.8.5') {
+		transitive = false
+	}
 }
 
 jar {
@@ -177,11 +182,11 @@ spotless {
 
 checkstyle {
 	configFile = file('checkstyle.xml')
-	toolVersion = '9.3'
+	toolVersion = '10.3.1'
 }
 
 codenarc {
-	toolVersion = "2.2.0"
+	toolVersion = "3.1.0"
 	configFile = file("codenarc.groovy")
 }
 
@@ -209,9 +214,20 @@ jacocoTestReport {
 }
 
 test {
-	maxHeapSize = "1536m"
+	maxHeapSize = "2560m"
 	useJUnitPlatform()
-	maxParallelForks = Runtime.runtime.availableProcessors() ?: 1
+
+	// Forward system prop onto tests.
+	if (System.getProperty("fabric.loom.test.homeDir")) {
+		systemProperty "fabric.loom.test.homeDir", System.getProperty("fabric.loom.test.homeDir")
+	}
+
+
+	if (ENV.CI) {
+		retry {
+			maxRetries = 3
+		}
+	}
 }
 
 import org.gradle.util.GradleVersion
@@ -262,12 +278,12 @@ publishing {
 
 	repositories {
 		mavenLocal()
-		if (System.getenv("MAVEN_PASS") != null) {
+		if (ENV.MAVEN_PASS != null) {
 			maven {
 				url = "https://deploy.shedaniel.me/"
 				credentials {
 					username = "shedaniel"
-					password = System.getenv("MAVEN_PASS")
+					password = ENV.MAVEN_PASS
 				}
 			}
 		}
@@ -353,4 +369,22 @@ task downloadGradleSources() {
 
 tasks.withType(GenerateModuleMetadata) {
 	enabled = false
+}
+
+task printActionsTestName(type: PrintActionsTestName) {
+}
+
+/**
+ * Replaces invalid characters in test names for GitHub Actions artifacts.
+ */
+class PrintActionsTestName extends DefaultTask {
+	@Input
+	@Option(option = "name", description = "The test name")
+	String testName
+
+	@TaskAction
+	def run() {
+		def sanitised = testName.replace('*', '_')
+		println "::set-output name=test::$sanitised"
+	}
 }
